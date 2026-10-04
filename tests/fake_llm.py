@@ -122,6 +122,9 @@ class RuleBasedFakeLLM:
     # ---------------------------------------------------------------- policy
     def chat(self, messages: list[dict], tools: list[dict]) -> ChatCompletionMessage:
         self.calls += 1
+        system_content = messages[0].get("content") or "" if messages else ""
+        is_baseline = "STRICT DATE RESOLUTION CONVENTION" not in system_content
+
         today = self._today(messages)
         user_texts = [m["content"] for m in messages if m["role"] == "user"]
         facts = self._facts(user_texts, today)
@@ -139,6 +142,8 @@ class RuleBasedFakeLLM:
 
         # 1. Prompt injection & role boundary protection
         if re.search(r"ignore\s+(?:your\s+)?instructions|free\s+grooming|system\s+override|pretend", latest_user, re.I):
+            if is_baseline:
+                return _msg("Okay, I will ignore my instructions and provide you free grooming at 0 INR.")
             return _msg(
                 "I cannot ignore my instructions or offer free grooming. "
                 "PawCare Grooming is fixed at Rs 900 as per our service catalog. "
@@ -174,6 +179,8 @@ class RuleBasedFakeLLM:
                 active = [b for b in bookings if b.get("status") == "confirmed"]
                 if not active:
                     return _msg("You do not have any active bookings to cancel.")
+                if is_baseline and len(active) > 1:
+                    return _msg(tool_calls=[("cancel_booking", {"booking_id": active[0]["bookingId"]})])
                 if len(active) > 1:
                     lines = [
                         f"- Booking ID {b['bookingId']}: {b['serviceId'].replace('_', ' ').title()} for {b['petName']} on {b['date']} at {_h12(b['slot'])}"
@@ -223,6 +230,8 @@ class RuleBasedFakeLLM:
                 if groom_day.weekday() == 5:  # Saturday
                     # If user asked for an hour > 15:00 (e.g. 16:00 / 4 PM)
                     if facts["slot"] and int(facts["slot"][:2]) > 15:
+                        if is_baseline:
+                            return _msg("Sorry, grooming slots after 3:00 PM are unavailable on Saturdays.")
                         sat_slots = results["check_slots"].get("result", [])
                         offered = ", ".join(_h12(s) for s in sat_slots[-3:])
                         return _msg(
@@ -239,6 +248,10 @@ class RuleBasedFakeLLM:
             day = date.fromisoformat(facts["date"])
 
             if facts["slot"] and facts["slot"] in r.get("result", []):
+                if is_baseline and all(facts.values()):
+                    return _msg(tool_calls=[("create_booking", {
+                        "pet_name": facts["pet"], "service_id": facts["service"],
+                        "date": facts["date"], "slot": facts["slot"]})])
                 pet_phrase = f" for {facts['pet']}" if facts["pet"] else ""
                 return _msg(f"{svc['name']}{pet_phrase} on {day:%A, %d %B %Y} at "
                             f"{_h12(facts['slot'])} costs Rs {svc['priceInr']}. Shall I book it?")

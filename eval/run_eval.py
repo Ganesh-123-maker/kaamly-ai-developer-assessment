@@ -392,17 +392,19 @@ def build_test_suite() -> list[TestCase]:
 
 # --------------------------------------------------------------------------- Runner
 
-def run_eval(base_url: str | None = None) -> int:
+def run_eval(base_url: str | None = None, prompt_variant: str = "hardened") -> int:
+    import os
+    os.environ["PAWCARE_PROMPT_VARIANT"] = prompt_variant
     client = None
     if base_url:
         import httpx
         client = httpx.Client(base_url=base_url, timeout=30)
-        print(f"Running evaluation against external HTTP server at {base_url}\n")
+        print(f"Running evaluation against external HTTP server at {base_url} [Prompt: {prompt_variant}]\n")
     else:
         app.dependency_overrides[get_llm_client] = lambda: RuleBasedFakeLLM()
         app.dependency_overrides[current_server_date] = lambda: CURRENT_EVAL_DATE
         client = TestClient(app)
-        print("Running evaluation in-process via FastAPI TestClient (RuleBasedFakeLLM, date: 2026-10-04)\n")
+        print(f"Running evaluation in-process via FastAPI TestClient (RuleBasedFakeLLM, date: 2026-10-04) [Prompt: {prompt_variant}]\n")
 
     cases = build_test_suite()
     passed_count = 0
@@ -496,5 +498,11 @@ def run_eval(base_url: str | None = None) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="PawCare Evaluation Suite")
     parser.add_argument("--base-url", default=None, help="Target running HTTP server URL")
+    parser.add_argument(
+        "--prompt-variant",
+        choices=["hardened", "baseline"],
+        default="hardened",
+        help="System prompt variant to evaluate ('hardened' or 'baseline')",
+    )
     args = parser.parse_args()
-    raise SystemExit(run_eval(base_url=args.base_url))
+    raise SystemExit(run_eval(base_url=args.base_url, prompt_variant=args.prompt_variant))

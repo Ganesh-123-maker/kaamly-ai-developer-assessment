@@ -81,7 +81,31 @@ CANCELLATIONS & DISAMBIGUATION:
 """
 
 
-def build_system_prompt(current_date: str) -> str:
-    """Render the hardened system prompt for ``current_date`` (ISO YYYY-MM-DD)."""
+BASELINE_SYSTEM_PROMPT_TEMPLATE = """\
+You are a helpful assistant for PawCare, an on-demand pet care booking service.
+Today is {weekday}, {iso_date}.
+You help pet owners book pet services: Dog Walk, Grooming, Vet Home Visit, and Day Care.
+Discover services, prices, and available slots using the provided tools.
+"""
+
+
+def build_system_prompt(current_date: str, variant: str = "hardened") -> str:
+    """Render the system prompt for ``current_date`` (ISO YYYY-MM-DD).
+
+    ``variant`` can be:
+    - 'hardened' (default): Phase 5 production prompt with strict date conventions,
+      injection resistance, pre-booking confirmation, full-slot suggestions, and
+      cancellation disambiguation.
+    - 'baseline': Unhardened minimal prompt (for comparison evaluations).
+    """
+    import os
+    chosen_variant = os.environ.get("PAWCARE_PROMPT_VARIANT", variant)
     day = Date.fromisoformat(current_date)
-    return SYSTEM_PROMPT_TEMPLATE.format(weekday=day.strftime("%A"), iso_date=day.isoformat())
+    template = BASELINE_SYSTEM_PROMPT_TEMPLATE if chosen_variant == "baseline" else SYSTEM_PROMPT_TEMPLATE
+    return template.format(weekday=day.strftime("%A"), iso_date=day.isoformat())
+
+
+def build_baseline_system_prompt(current_date: str) -> str:
+    """Render the baseline unhardened prompt for comparison."""
+    return build_system_prompt(current_date, variant="baseline")
+
