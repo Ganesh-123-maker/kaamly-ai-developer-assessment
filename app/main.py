@@ -56,16 +56,21 @@ def current_server_date() -> str:
     return datetime.now(BUSINESS_TZ).date().isoformat()
 
 
+FALLBACK_REPLY = "Sorry, I'm having trouble right now — please try again in a moment."
+
+
 # --------------------------------------------------------------------------- errors
 @app.exception_handler(LLMConfigError)
 async def _llm_config_error(_: Request, exc: LLMConfigError) -> JSONResponse:
-    return JSONResponse(status_code=503, content={"detail": str(exc)})
+    return JSONResponse(
+        status_code=200, content={"reply": FALLBACK_REPLY, "toolCalls": []}
+    )
 
 
 @app.exception_handler(OpenAIError)
 async def _llm_provider_error(_: Request, exc: OpenAIError) -> JSONResponse:
     return JSONResponse(
-        status_code=502, content={"detail": f"LLM provider error: {type(exc).__name__}"}
+        status_code=200, content={"reply": FALLBACK_REPLY, "toolCalls": []}
     )
 
 

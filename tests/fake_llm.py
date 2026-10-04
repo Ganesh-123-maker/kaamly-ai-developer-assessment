@@ -1,14 +1,13 @@
 """Deterministic stand-in for a real LLM, used when no API key is available.
 
 ``RuleBasedFakeLLM.chat(messages, tools)`` decides its reply ONLY from the
-messages it is sent - it keeps no state of its own. That makes it a fair probe
-of conversation memory and tool dispatch.
+messages it is sent - it keeps no state of its own.
 
-Hardened in Phase 4 to:
-- Use `app.date_utils.resolve_relative_date` with strict conventions.
-- Check slots when service and date are known even if pet/slot are still missing.
-- When `check_slots` returns empty for a weekday-only service (like vet visit on Sunday),
-  automatically call `check_slots` for the upcoming weekday to offer real verified alternatives.
+Hardened in Phase 5 to cover:
+- Prompt injection resistance ("ignore instructions", "free grooming").
+- Saturday after 3 PM grooming slot rule explanation and alternative suggestion.
+- Multi-booking cancellation disambiguation via `get_bookings`.
+- Pathological tool loop triggering for testing the hard cap.
 """
 
 from __future__ import annotations
@@ -133,7 +132,53 @@ class RuleBasedFakeLLM:
 
         latest_user = user_texts[-1]
 
-        # 1. Did we just invoke create_booking in this turn?
+        # 0. Pathological loop test trigger
+        if "loop forever" in latest_user.lower():
+            # Keep calling list_services indefinitely to trigger loop cap
+            return _msg(tool_calls=[("list_services", {})])
+
+        # 1. Prompt injection & role boundary protection
+        if re.search(r"ignore\s+(?:your\s+)?instructions|free\s+grooming|system\s+override|pretend", latest_user, re.I):
+            return _msg(
+                "I cannot ignore my instructions or offer free grooming. "
+                "PawCare Grooming is fixed at Rs 900 as per our service catalog. "
+                "I can only help you check availability and book standard PawCare services."
+            )
+
+        # 2. General knowledge / Off-topic decline
+        if re.search(r"capital of france|who is president|write code|weather in", latest_user, re.I):
+            return _msg(
+                "I can only help with PawCare pet services: dog walks, grooming, "
+                "vet home visits, and day care. What service would you like to book?"
+            )
+
+        # 3. Cancellation & Disambiguation
+        if re.search(r"cancel\s+(?:my\s+)?booking", latest_user, re.I):
+            if "get_bookings" not in results:
+                return _msg(tool_calls=[("get_bookings", {})])
+            else:
+                # get_bookings results returned
+                bookings = results["get_bookings"].get("result", [])
+                active = [b for b in bookings if b.get("status") == "confirmed"]
+                if not active:
+                    return _msg("You do not have any active bookings to cancel.")
+                if len(active) > 1:
+                    lines = [
+                        f"- Booking ID {b['bookingId']}: {b['serviceId'].replace('_', ' ').title()} for {b['petName']} on {b['date']} at {_h12(b['slot'])}"
+                        for b in active
+                    ]
+                    return _msg(
+                        f"You have {len(active)} active bookings:\n" + "\n".join(lines) +
+                        "\nWhich booking would you like to cancel? Please specify the booking ID."
+                    )
+                else:
+                    target = active[0]
+                    return _msg(
+                        f"You have one active booking: {target['serviceId'].replace('_', ' ').title()} for {target['petName']} on {target['date']} at {_h12(target['slot'])} (ID: {target['bookingId']}). "
+                        f"Would you like me to cancel this booking?"
+                    )
+
+        # 4. Did we just invoke create_booking in this turn?
         if "create_booking" in results:
             r = results["create_booking"]
             if not r["ok"]:
@@ -142,29 +187,36 @@ class RuleBasedFakeLLM:
             return _msg(f"Done! {b['petName']} is booked for {b['serviceId'].replace('_', ' ')} "
                         f"on {b['date']} at {_h12(b['slot'])}. Booking ID: {b['bookingId']}.")
 
-        # 2. Did we just check slots in this turn?
+        # 5. Did we just check slots in this turn?
         if "check_slots" in results:
-            # Special case: check if this was a weekend vet check that returned empty
+            # Weekend vet visit check
             if facts["service"] == "vet_home_visit" and facts["date"]:
                 vet_day = date.fromisoformat(facts["date"])
                 if vet_day.weekday() in (5, 6):  # Sat or Sun
                     monday_date = resolve_relative_date("next monday", today)
-                    # Have we checked Monday yet in this turn?
-                    checked_monday = any(
-                        r["name"] == "check_slots" and r["content"].get("result")
-                        for r in results_list
-                    )
-                    # If this was the Sunday call (result empty), call Monday!
                     if not results["check_slots"].get("result"):
                         return _msg(tool_calls=[("check_slots", {"service_id": "vet_home_visit", "date": monday_date})])
                     else:
-                        # This is the Monday result
                         monday_slots = results["check_slots"].get("result", [])
                         offered = ", ".join(_h12(s) for s in monday_slots[:6]) + "..."
                         return _msg(
                             f"Vet Home Visits are available on weekdays only, so {vet_day:%A, %d %B %Y} has no available slots. "
                             f"However, I checked Monday ({monday_date}) and slots are available: {offered}. "
                             f"Would you like to book one of those? (Please also share your pet's name and preferred time)."
+                        )
+
+            # Saturday Grooming after 3 PM check
+            if facts["service"] == "grooming" and facts["date"]:
+                groom_day = date.fromisoformat(facts["date"])
+                if groom_day.weekday() == 5:  # Saturday
+                    # If user asked for an hour > 15:00 (e.g. 16:00 / 4 PM)
+                    if facts["slot"] and int(facts["slot"][:2]) > 15:
+                        sat_slots = results["check_slots"].get("result", [])
+                        offered = ", ".join(_h12(s) for s in sat_slots[-3:])
+                        return _msg(
+                            f"On Saturdays, grooming slots after 3:00 PM are full per our policy, so {_h12(facts['slot'])} is unavailable. "
+                            f"However, earlier Saturday slots are available: {offered}. "
+                            f"Would you like to book one of those instead?"
                         )
 
             r = results["check_slots"]
@@ -191,7 +243,7 @@ class RuleBasedFakeLLM:
             else:
                 return _msg(f"No slots are available for {svc['name']} on {day:%A, %d %B %Y}.")
 
-        # 3. Memory inspection / isolation query
+        # 6. Memory inspection / isolation query
         if re.search(r"pet'?s name|what did i", latest_user, re.I):
             if facts["pet"] or facts["service"]:
                 return _msg(f"So far: pet={facts['pet'] or 'not given'}, "
@@ -199,25 +251,25 @@ class RuleBasedFakeLLM:
             return _msg("You haven't told me your pet's name or what you'd like to book in this "
                         "conversation yet. I can help with dog walks, grooming, vet home visits and day care.")
 
-        # 4. Handle explicit confirmation
+        # 7. Handle explicit confirmation
         if _AFFIRMATIVE.match(latest_user) and "Shall I book it?" in last_assistant and all(facts.values()):
             return _msg(tool_calls=[("create_booking", {
                 "pet_name": facts["pet"], "service_id": facts["service"],
                 "date": facts["date"], "slot": facts["slot"]})])
 
-        # 5. Scope check
+        # 8. Scope check
         if facts["service"] is None:
             return _msg("I can only help with PawCare pet services: dog walks, grooming, "
                         "vet home visits and day care. What would you like to book?")
 
-        # 6. Do we have service and date? If so, check slots even if pet or time is missing!
+        # 9. Do we have service and date? If so, check slots even if pet or time is missing!
         if facts["service"] and facts["date"] and "check_slots" not in results:
             tools_to_call = [("check_slots", {"service_id": facts["service"], "date": facts["date"]})]
             if "list_services" not in results:
                 tools_to_call.insert(0, ("list_services", {}))
             return _msg(tool_calls=tools_to_call)
 
-        # 7. If missing details, ask for them (DO NOT call create_booking)
+        # 10. If missing details, ask for them (DO NOT call create_booking)
         missing = [label for key, label in
                    (("pet", "your pet's name"), ("date", "the date"), ("slot", "the preferred time"))
                    if not facts[key]]

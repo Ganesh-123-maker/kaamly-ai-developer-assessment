@@ -83,14 +83,15 @@ def test_chat_response_shape(client):
         assert set(call) == {"name", "arguments", "result"}
 
 
-def test_missing_llm_config_returns_503(monkeypatch):
+def test_missing_llm_config_degrades_gracefully_to_200(monkeypatch):
     for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("app.llm_client.load_dotenv", lambda: None)
     get_llm_client.cache_clear()
     resp = TestClient(app).post("/chat", json={"sessionId": "s", "message": "hi"})
-    assert resp.status_code == 503
-    assert "LLM_API_KEY" in resp.json()["detail"]
+    assert resp.status_code == 200
+    assert "trouble right now" in resp.json()["reply"]
+    assert resp.json()["toolCalls"] == []
     get_llm_client.cache_clear()
 
 

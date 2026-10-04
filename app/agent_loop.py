@@ -40,6 +40,14 @@ def _resolve_tool(name: str) -> Callable[..., Any]:
     return getattr(tools, name)
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+MAX_TOOL_CALLS = 6
+LOOP_CAP_FALLBACK = "I'm having trouble completing that — could you confirm the details again?"
+
+
 def execute_tool_call(
     name: str, raw_arguments: str | None, *, session_id: str | None = None
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -47,8 +55,8 @@ def execute_tool_call(
 
     Returns ``(parsed_arguments, result_payload)`` where the payload is
     ``{"ok": True, "result": ...}`` or ``{"ok": False, "error": "..."}``.
-    Expected failures (bad arguments, PawCareError) become error payloads so the
-    model can read them and recover; genuine bugs still raise.
+    Catches PawCareError, ValueError, or any other tool failure and feeds
+    the error description back to the model as JSON so it can explain and recover.
     """
     schema = _SCHEMA_BY_NAME.get(name)
     if schema is None:
@@ -80,8 +88,11 @@ def execute_tool_call(
 
     try:
         result = func(**kwargs)
-    except tools.PawCareError as exc:
+    except (tools.PawCareError, ValueError) as exc:
         return args, {"ok": False, "error": str(exc)}
+    except Exception as exc:
+        logger.exception("Unexpected error in tool %s: %s", name, exc)
+        return args, {"ok": False, "error": f"Tool execution failed: {exc}"}
     return args, {"ok": True, "result": _to_jsonable(result)}
 
 
@@ -106,14 +117,23 @@ def _assistant_tool_call_entry(content: str | None, tool_calls: list[Any]) -> di
 def _run_tool_loop(
     client: ChatClient, messages: list[dict[str, Any]], *, session_id: str | None
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Call the model with ``messages`` until it gives a text reply.
+    """Call the model with ``messages`` until it gives a text reply or hits the tool cap.
 
     Appends every assistant tool-call message, tool result and the final
     assistant reply to ``messages`` in place. Returns ``(reply, trace)`` where
     ``trace`` lists only the tools invoked during this call.
     """
     trace: list[dict[str, Any]] = []
-    while True:  # Phase 5 adds an iteration cap
+    while True:
+        if len(trace) >= MAX_TOOL_CALLS:
+            logger.warning(
+                "Tool-call loop cap (%d) reached in single turn. Halting tool loop.",
+                MAX_TOOL_CALLS,
+            )
+            reply = LOOP_CAP_FALLBACK
+            messages.append({"role": "assistant", "content": reply})
+            return reply, trace
+
         message = client.chat(messages=messages, tools=TOOL_SCHEMAS)
         # Only function tools are defined; ignore any other tool-call types.
         tool_calls = [
@@ -124,6 +144,14 @@ def _run_tool_loop(
             messages.append({"role": "assistant", "content": reply})
             return reply, trace
 
+        # Enforce remaining quota in trace
+        remaining = MAX_TOOL_CALLS - len(trace)
+        if len(tool_calls) > remaining:
+            logger.warning(
+                "Truncating tool calls from %d to remaining quota %d.", len(tool_calls), remaining
+            )
+            tool_calls = tool_calls[:remaining]
+
         messages.append(_assistant_tool_call_entry(message.content, tool_calls))
         for tc in tool_calls:
             args, result = execute_tool_call(
@@ -133,6 +161,15 @@ def _run_tool_loop(
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result)}
             )
+
+        if len(trace) >= MAX_TOOL_CALLS:
+            logger.warning(
+                "Tool-call loop cap (%d) reached in single turn. Returning fallback.",
+                MAX_TOOL_CALLS,
+            )
+            reply = LOOP_CAP_FALLBACK
+            messages.append({"role": "assistant", "content": reply})
+            return reply, trace
 
 
 def run_turn(
