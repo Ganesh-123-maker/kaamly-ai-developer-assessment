@@ -289,6 +289,37 @@ def assert_case_13(turns: list[TurnResult], bookings: list[tools.Booking]) -> tu
     return True, "Handled gibberish gracefully with zero tool calls and guided user back to services."
 
 
+def assert_case_14(turns: list[TurnResult], bookings: list[tools.Booking]) -> tuple[bool, str]:
+    # Turn 1: "kal shaam 4 baje Bruno ka dog walk book karo"
+    t1 = turns[0]
+    t1_tools = [c["name"] for c in t1.tool_calls]
+    if "check_slots" not in t1_tools:
+        return False, "Turn 1 did not call check_slots for Hinglish dog walk request"
+    if "create_booking" in t1_tools:
+        return False, "Turn 1 called create_booking before explicit confirmation"
+
+    # Turn 2: "haan, book kardo"
+    t2 = turns[1]
+    t2_tools = [c["name"] for c in t2.tool_calls]
+    if "create_booking" not in t2_tools:
+        return False, "Turn 2 did not call create_booking after Hinglish confirmation ('haan, book kardo')"
+
+    cb = next(c for c in t2.tool_calls if c["name"] == "create_booking")
+    args = cb["arguments"]
+    if args.get("pet_name") != "Bruno":
+        return False, f"Hinglish pet name extracted wrongly: {args.get('pet_name')}"
+    if args.get("service_id") != "dog_walk":
+        return False, f"Hinglish service resolved wrongly: {args.get('service_id')}"
+    if args.get("slot") != "16:00":
+        return False, f"Hinglish slot resolved wrongly: {args.get('slot')} (expected 16:00)"
+    if args.get("date") != "2026-10-05":
+        return False, f"Hinglish 'kal' date resolved wrongly: {args.get('date')} (expected 2026-10-05)"
+
+    if len(bookings) != 1:
+        return False, f"Expected 1 confirmed booking, found {len(bookings)}"
+    return True, "Understood Hinglish date ('kal'), time ('shaam 4 baje'), and confirmation ('haan, book kardo')."
+
+
 # --------------------------------------------------------------------------- Test Suite Definition
 
 def build_test_suite() -> list[TestCase]:
@@ -386,6 +417,15 @@ def build_test_suite() -> list[TestCase]:
             name="Nonsense / gibberish message graceful handling",
             messages=["asdfghjkl qwerty 123456 !!!???"],
             assert_fn=assert_case_13,
+        ),
+        TestCase(
+            id="CASE-14",
+            name="Hinglish booking flow (kal shaam 4 baje / haan book kardo)",
+            messages=[
+                "kal shaam 4 baje Bruno ka dog walk book karo",
+                "haan, book kardo",
+            ],
+            assert_fn=assert_case_14,
         ),
     ]
 

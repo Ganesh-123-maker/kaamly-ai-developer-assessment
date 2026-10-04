@@ -31,8 +31,12 @@ _PET_PATTERNS = [
     r"(?:dog|cat|pet|puppy)(?:'s|s)? name is ([A-Z][a-zA-Z]+)",
     r"(?:named|called) ([A-Z][a-zA-Z]+)",
     r"\bfor (?:my )?(?:dog|cat|pet|puppy )?([A-Z][a-zA-Z]+)",
+    r"\b([A-Z][a-zA-Z]+) (?:ka|ki|ke liye)\b",
 ]
-_AFFIRMATIVE = re.compile(r"^\s*(yes|yep|yeah|confirm|confirmed|sure|go ahead|please do|please book)\b", re.I)
+_AFFIRMATIVE = re.compile(
+    r"^\s*(yes|yep|yeah|confirm|confirmed|sure|go ahead|please do|please book|haan|haanji|kardo|book kardo|theek hai)\b",
+    re.I,
+)
 
 
 def _msg(content: str | None = None, tool_calls: list[tuple[str, dict]] | None = None):
@@ -78,9 +82,9 @@ class RuleBasedFakeLLM:
             # Date resolution
             if m := re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text):
                 facts["date"] = m.group(1)
-            elif "tomorrow" in low:
+            elif "tomorrow" in low or re.search(r"\bkal\b", low):
                 facts["date"] = resolve_relative_date("tomorrow", today)
-            elif "today" in low:
+            elif "today" in low or re.search(r"\baaj\b", low):
                 facts["date"] = resolve_relative_date("today", today)
             else:
                 m_rel = re.search(r"\b(this|next)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", low)
@@ -92,7 +96,18 @@ class RuleBasedFakeLLM:
                         facts["date"] = resolve_relative_date(m_plain.group(1), today)
 
             # Slot time resolution
-            if m := re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", low):
+            if m := re.search(r"(?:shaam|raat)\s+(\d{1,2})(?::(\d{2}))?\s*baje", low):
+                hour = int(m.group(1)) % 12 + 12
+                facts["slot"] = f"{hour:02d}:{m.group(2) or '00'}"
+            elif m := re.search(r"(?:subah)\s+(\d{1,2})(?::(\d{2}))?\s*baje", low):
+                hour = int(m.group(1)) % 12
+                facts["slot"] = f"{hour:02d}:{m.group(2) or '00'}"
+            elif m := re.search(r"(\d{1,2})(?::(\d{2}))?\s*baje", low):
+                hour = int(m.group(1))
+                if hour < 8:
+                    hour += 12
+                facts["slot"] = f"{hour:02d}:{m.group(2) or '00'}"
+            elif m := re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", low):
                 hour = int(m.group(1)) % 12 + (12 if m.group(3) == "pm" else 0)
                 facts["slot"] = f"{hour:02d}:{m.group(2) or '00'}"
             elif m := re.search(r"\b([01]\d|2[0-3]):([0-5]\d)\b", low):
