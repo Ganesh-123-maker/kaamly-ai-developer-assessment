@@ -1,6 +1,7 @@
-"""Single-turn tool-calling loop: one user message in, final reply + tool trace out.
+"""Tool-calling loop: one user message in, final reply + tool trace out.
 
-No conversation memory (Phase 3) and no loop limit / safety rails (Phase 5) yet.
+Stateless by default; pass ``session_id`` to continue a per-session conversation
+(history kept in ``app.session_store``). No loop limit / safety rails yet (Phase 5).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from typing import Any, Callable, Protocol
 from pydantic import BaseModel
 
 from app import tools
+from app.session_store import SESSION_STORE, SessionStore
 from app.system_prompt import build_system_prompt
 from app.tool_schemas import SERVER_INJECTED_PARAMS, TOOL_SCHEMAS
 
@@ -101,26 +103,16 @@ def _assistant_tool_call_entry(content: str | None, tool_calls: list[Any]) -> di
     return entry
 
 
-def run_turn(user_message: str, current_date: str, *, client: ChatClient | None = None) -> dict:
-    """Run one user message through the model, executing tool calls until a text reply.
+def _run_tool_loop(
+    client: ChatClient, messages: list[dict[str, Any]], *, session_id: str | None
+) -> tuple[str, list[dict[str, Any]]]:
+    """Call the model with ``messages`` until it gives a text reply.
 
-    ``current_date`` (YYYY-MM-DD) is supplied by the caller and injected into the
-    system prompt - this function never reads the system clock.
-
-    Returns ``{"reply": str, "toolCalls": [{"name", "arguments", "result"}, ...]}``.
+    Appends every assistant tool-call message, tool result and the final
+    assistant reply to ``messages`` in place. Returns ``(reply, trace)`` where
+    ``trace`` lists only the tools invoked during this call.
     """
-    Date.fromisoformat(current_date)  # fail fast on a bad date (ValueError)
-    if client is None:
-        from app.llm_client import LLMClient  # lazy: tests never need real config
-
-        client = LLMClient()
-
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": build_system_prompt(current_date)},
-        {"role": "user", "content": user_message},
-    ]
     trace: list[dict[str, Any]] = []
-
     while True:  # Phase 5 adds an iteration cap
         message = client.chat(messages=messages, tools=TOOL_SCHEMAS)
         # Only function tools are defined; ignore any other tool-call types.
@@ -128,12 +120,61 @@ def run_turn(user_message: str, current_date: str, *, client: ChatClient | None 
             tc for tc in (message.tool_calls or []) if getattr(tc, "type", "function") == "function"
         ]
         if not tool_calls:
-            return {"reply": message.content or "", "toolCalls": trace}
+            reply = message.content or ""
+            messages.append({"role": "assistant", "content": reply})
+            return reply, trace
 
         messages.append(_assistant_tool_call_entry(message.content, tool_calls))
         for tc in tool_calls:
-            args, result = execute_tool_call(tc.function.name, tc.function.arguments)
+            args, result = execute_tool_call(
+                tc.function.name, tc.function.arguments, session_id=session_id
+            )
             trace.append({"name": tc.function.name, "arguments": args, "result": result})
             messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result)}
             )
+
+
+def run_turn(
+    user_message: str,
+    current_date: str,
+    *,
+    session_id: str | None = None,
+    client: ChatClient | None = None,
+    store: SessionStore | None = None,
+) -> dict:
+    """Run one user message through the model, executing tool calls until a text reply.
+
+    ``current_date`` (YYYY-MM-DD) is supplied by the caller and injected into the
+    system prompt - this function never reads the system clock.
+
+    Without ``session_id`` the turn is stateless (fresh conversation). With a
+    ``session_id`` the session's full prior history is sent, the system prompt
+    is refreshed with ``current_date``, tools are scoped to that session, and the
+    updated history is saved - only if the turn completes successfully.
+
+    Returns ``{"reply": str, "toolCalls": [{"name", "arguments", "result"}, ...]}``
+    where ``toolCalls`` covers this turn only.
+    """
+    Date.fromisoformat(current_date)  # fail fast on a bad date (ValueError)
+    if client is None:
+        from app.llm_client import LLMClient  # lazy: tests never need real config
+
+        client = LLMClient()
+    system_message = {"role": "system", "content": build_system_prompt(current_date)}
+    user_entry = {"role": "user", "content": user_message}
+
+    if session_id is None:
+        messages = [system_message, user_entry]
+        reply, trace = _run_tool_loop(client, messages, session_id=None)
+        return {"reply": reply, "toolCalls": trace}
+
+    store = store if store is not None else SESSION_STORE
+    with store.turn(session_id):
+        history = store.get_history(session_id)
+        # Index 0 is always the system prompt; refresh it so the date is current.
+        messages = [system_message, *history[1:], user_entry]
+        reply, trace = _run_tool_loop(client, messages, session_id=session_id)
+        store.save_history(session_id, messages)
+    return {"reply": reply, "toolCalls": trace}
+
