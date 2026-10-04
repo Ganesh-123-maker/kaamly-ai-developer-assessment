@@ -43,6 +43,7 @@ class TurnResult:
     reply: str
     tool_calls: list[dict[str, Any]]
     status_code: int
+    metrics: dict[str, Any] | None = None
 
 
 @dataclass
@@ -407,6 +408,12 @@ def run_eval(base_url: str | None = None) -> int:
     passed_count = 0
     total_count = len(cases)
 
+    # Metrics aggregation
+    turn_latencies: list[float] = []
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_estimated_cost = 0.0
+
     print("=" * 80)
     print(f"{'ID':<8} | {'TEST CASE NAME':<45} | {'RESULT':<6} | REASON")
     print("=" * 80)
@@ -425,8 +432,17 @@ def run_eval(base_url: str | None = None) -> int:
                 bid = m.group(1) if m else "unknown-id"
                 user_msg = f"Please cancel booking {bid}"
 
-            resp = client.post("/chat", json={"sessionId": sid, "message": user_msg})
+            resp = client.post(
+                "/chat", json={"sessionId": sid, "message": user_msg, "includeMetrics": True}
+            )
             data = resp.json()
+            metrics = data.get("metrics")
+            if metrics:
+                turn_latencies.append(metrics.get("latencyMs", 0.0))
+                total_prompt_tokens += metrics.get("promptTokens", 0)
+                total_completion_tokens += metrics.get("completionTokens", 0)
+                total_estimated_cost += metrics.get("estimatedCostUsd", 0.0)
+
             turn_results.append(
                 TurnResult(
                     turn_index=idx,
@@ -434,6 +450,7 @@ def run_eval(base_url: str | None = None) -> int:
                     reply=data.get("reply", ""),
                     tool_calls=data.get("toolCalls", []),
                     status_code=resp.status_code,
+                    metrics=metrics,
                 )
             )
 
@@ -456,6 +473,22 @@ def run_eval(base_url: str | None = None) -> int:
     print("=" * 80)
     pct = (passed_count / total_count) * 100.0
     print(f"\nOVERALL PASS RATE: {passed_count}/{total_count} passed ({pct:.1f}%)\n")
+
+    if turn_latencies:
+        avg_latency = sum(turn_latencies) / len(turn_latencies)
+        total_tokens = total_prompt_tokens + total_completion_tokens
+        print("=" * 80)
+        print("EVALUATION METRICS & COST SUMMARY")
+        print("=" * 80)
+        print(f"Total Conversation Turns Evaluated:  {len(turn_latencies)}")
+        print(f"Average Wall-Clock Latency / Turn:   {avg_latency:.2f} ms")
+        print(f"Total Prompt (Input) Tokens:         {total_prompt_tokens:,}")
+        print(f"Total Completion (Output) Tokens:    {total_completion_tokens:,}")
+        print(f"Total Tokens Consumed:               {total_tokens:,}")
+        print(f"Approximate Total Cost:              ${total_estimated_cost:.6f} USD")
+        print("Pricing Reference:                   OpenAI GPT-4o-mini published rates")
+        print("                                     ($0.150 / 1M prompt, $0.600 / 1M completion)")
+        print("=" * 80 + "\n")
 
     return 0 if passed_count == total_count else 1
 

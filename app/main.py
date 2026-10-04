@@ -31,6 +31,7 @@ class _CamelModel(BaseModel):
 class ChatRequest(_CamelModel):
     session_id: str = Field(min_length=1, max_length=128, description="Client-chosen conversation id.")
     message: str = Field(min_length=1, max_length=4000)
+    include_metrics: bool = Field(default=False)
 
 
 class ToolCallRecord(_CamelModel):
@@ -39,9 +40,18 @@ class ToolCallRecord(_CamelModel):
     result: dict[str, Any]
 
 
+class ChatMetrics(_CamelModel):
+    latency_ms: float
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    estimated_cost_usd: float
+
+
 class ChatResponse(_CamelModel):
     reply: str
     tool_calls: list[ToolCallRecord]
+    metrics: ChatMetrics | None = None
 
 
 # --------------------------------------------------------------------------- dependencies
@@ -84,7 +94,7 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=ChatResponse, response_model_exclude_none=True)
 def chat(
     request: ChatRequest,
     client: ChatClient = Depends(get_llm_client),
@@ -92,5 +102,13 @@ def chat(
 ) -> ChatResponse:
     # Sync endpoint -> runs in FastAPI's threadpool; SessionStore serializes turns
     # per session and tools.py locks the booking store.
-    result = run_turn(request.message, today, session_id=request.session_id, client=client)
-    return ChatResponse(reply=result["reply"], tool_calls=result["toolCalls"])
+    result = run_turn(
+        request.message,
+        today,
+        session_id=request.session_id,
+        client=client,
+        return_metrics=request.include_metrics,
+    )
+    return ChatResponse(
+        reply=result["reply"], tool_calls=result["toolCalls"], metrics=result.get("metrics")
+    )

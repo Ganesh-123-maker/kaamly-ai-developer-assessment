@@ -93,7 +93,12 @@ class LLMClient:
                     temperature=self.config.temperature,
                     timeout=self.config.timeout,
                 )
-                return response.choices[0].message
+                msg = response.choices[0].message
+                try:
+                    setattr(msg, "usage", getattr(response, "usage", None))
+                except Exception:
+                    pass
+                return msg
             except (
                 APITimeoutError,
                 APIConnectionError,

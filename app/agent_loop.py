@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import inspect
 import json
-from datetime import date as Date
+import time
+from datetime import date as Date, datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from pydantic import BaseModel
@@ -114,16 +116,34 @@ def _assistant_tool_call_entry(content: str | None, tool_calls: list[Any]) -> di
     return entry
 
 
+# Pricing reference: OpenAI GPT-4o-mini (openai.com/api/pricing)
+# $0.150 / 1M prompt tokens, $0.600 / 1M completion tokens
+INPUT_COST_PER_TOKEN = 0.150 / 1_000_000
+OUTPUT_COST_PER_TOKEN = 0.600 / 1_000_000
+
+METRICS_LOG_FILE = Path(__file__).resolve().parents[1] / "turn_metrics.jsonl"
+LAST_TURN_METRICS: dict[str, Any] = {}
+
+
+def get_last_metrics() -> dict[str, Any]:
+    """Return a copy of the metrics dictionary from the most recently completed turn."""
+    return dict(LAST_TURN_METRICS)
+
+
 def _run_tool_loop(
     client: ChatClient, messages: list[dict[str, Any]], *, session_id: str | None
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     """Call the model with ``messages`` until it gives a text reply or hits the tool cap.
 
     Appends every assistant tool-call message, tool result and the final
-    assistant reply to ``messages`` in place. Returns ``(reply, trace)`` where
-    ``trace`` lists only the tools invoked during this call.
+    assistant reply to ``messages`` in place. Returns ``(reply, trace, metrics)``.
     """
+    global LAST_TURN_METRICS
     trace: list[dict[str, Any]] = []
+    start_time = time.perf_counter()
+    prompt_tokens = 0
+    completion_tokens = 0
+
     while True:
         if len(trace) >= MAX_TOOL_CALLS:
             logger.warning(
@@ -132,19 +152,26 @@ def _run_tool_loop(
             )
             reply = LOOP_CAP_FALLBACK
             messages.append({"role": "assistant", "content": reply})
-            return reply, trace
+            break
 
         message = client.chat(messages=messages, tools=TOOL_SCHEMAS)
-        # Only function tools are defined; ignore any other tool-call types.
+        usage = getattr(message, "usage", None)
+        if usage:
+            prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+            completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+        else:
+            # Fallback estimation for test mocks / offline testing
+            prompt_tokens += sum(len(str(m.get("content", ""))) for m in messages) // 4 + 50
+            completion_tokens += len(str(message.content or "")) // 4 + 10
+
         tool_calls = [
             tc for tc in (message.tool_calls or []) if getattr(tc, "type", "function") == "function"
         ]
         if not tool_calls:
             reply = message.content or ""
             messages.append({"role": "assistant", "content": reply})
-            return reply, trace
+            break
 
-        # Enforce remaining quota in trace
         remaining = MAX_TOOL_CALLS - len(trace)
         if len(tool_calls) > remaining:
             logger.warning(
@@ -169,7 +196,45 @@ def _run_tool_loop(
             )
             reply = LOOP_CAP_FALLBACK
             messages.append({"role": "assistant", "content": reply})
-            return reply, trace
+            break
+
+    elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+    total_tokens = prompt_tokens + completion_tokens
+    cost_usd = round(
+        (prompt_tokens * INPUT_COST_PER_TOKEN) + (completion_tokens * OUTPUT_COST_PER_TOKEN), 8
+    )
+
+    metrics = {
+        "latencyMs": elapsed_ms,
+        "promptTokens": prompt_tokens,
+        "completionTokens": completion_tokens,
+        "totalTokens": total_tokens,
+        "estimatedCostUsd": cost_usd,
+    }
+    LAST_TURN_METRICS = dict(metrics)
+
+    logger.info(
+        "Turn completed in %.2fms | Tokens: in=%d, out=%d, total=%d | Est Cost: $%.6f",
+        elapsed_ms,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cost_usd,
+    )
+
+    # Simple structured JSON log entry
+    try:
+        log_record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "sessionId": session_id,
+            **metrics,
+        }
+        with open(METRICS_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_record) + "\n")
+    except Exception as exc:
+        logger.debug("Failed writing turn metrics log: %s", exc)
+
+    return reply, trace, metrics
 
 
 def run_turn(
@@ -179,23 +244,16 @@ def run_turn(
     session_id: str | None = None,
     client: ChatClient | None = None,
     store: SessionStore | None = None,
+    return_metrics: bool = False,
 ) -> dict:
     """Run one user message through the model, executing tool calls until a text reply.
 
-    ``current_date`` (YYYY-MM-DD) is supplied by the caller and injected into the
-    system prompt - this function never reads the system clock.
-
-    Without ``session_id`` the turn is stateless (fresh conversation). With a
-    ``session_id`` the session's full prior history is sent, the system prompt
-    is refreshed with ``current_date``, tools are scoped to that session, and the
-    updated history is saved - only if the turn completes successfully.
-
-    Returns ``{"reply": str, "toolCalls": [{"name", "arguments", "result"}, ...]}``
-    where ``toolCalls`` covers this turn only.
+    Returns ``{"reply": str, "toolCalls": list}`` by default, or with
+    ``"metrics": dict`` if ``return_metrics=True``.
     """
-    Date.fromisoformat(current_date)  # fail fast on a bad date (ValueError)
+    Date.fromisoformat(current_date)
     if client is None:
-        from app.llm_client import LLMClient  # lazy: tests never need real config
+        from app.llm_client import LLMClient
 
         client = LLMClient()
     system_message = {"role": "system", "content": build_system_prompt(current_date)}
@@ -203,15 +261,17 @@ def run_turn(
 
     if session_id is None:
         messages = [system_message, user_entry]
-        reply, trace = _run_tool_loop(client, messages, session_id=None)
-        return {"reply": reply, "toolCalls": trace}
+        reply, trace, metrics = _run_tool_loop(client, messages, session_id=None)
+    else:
+        store = store if store is not None else SESSION_STORE
+        with store.turn(session_id):
+            history = store.get_history(session_id)
+            messages = [system_message, *history[1:], user_entry]
+            reply, trace, metrics = _run_tool_loop(client, messages, session_id=session_id)
+            store.save_history(session_id, messages)
 
-    store = store if store is not None else SESSION_STORE
-    with store.turn(session_id):
-        history = store.get_history(session_id)
-        # Index 0 is always the system prompt; refresh it so the date is current.
-        messages = [system_message, *history[1:], user_entry]
-        reply, trace = _run_tool_loop(client, messages, session_id=session_id)
-        store.save_history(session_id, messages)
-    return {"reply": reply, "toolCalls": trace}
+    out: dict[str, Any] = {"reply": reply, "toolCalls": trace}
+    if return_metrics:
+        out["metrics"] = metrics
+    return out
 
