@@ -102,7 +102,8 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 The server provides:
-- `POST /chat` with body `{"sessionId": "user-session-123", "message": "Book a dog walk for Bruno tomorrow at 5pm"}`
+- **Interactive Web Chat UI**: Navigate to `http://127.0.0.1:8000/` in any browser for an interactive, modern chat interface supporting quick action chips, real-time message history, collapsible tool call execution logs, and per-turn latency/token/cost tracking.
+- `POST /chat` with body `{"sessionId": "user-session-123", "message": "Book a dog walk for Bruno tomorrow at 5pm", "includeMetrics": true}`
 - `GET /health` sanity check with server date and active session count.
 
 ### Standalone Testing Mode (No API Key Required)
@@ -239,9 +240,11 @@ To evaluate the empirical impact of our safety guardrails, date resolution rules
 
 ## 9. Future Improvements
 
+*(Note: A minimal single-page HTML/JS chat interface has been included and is live at `/`. Streaming responses via SSE were skipped in favor of synchronous JSON responses with full tool-calling metrics and the single-page UI).*
+
 With additional development time:
 1. **Persistent Relational Database**: Migrate in-memory storage to PostgreSQL using SQLAlchemy 2.0 async and Alembic migrations.
 2. **User Authentication & Authorization**: Introduce JWT-based auth so session IDs are securely tied to authenticated user accounts.
 3. **Calendar & Provider Integrations**: Sync confirmed bookings to Google Calendar / Outlook and integrate SMS/WhatsApp notifications (e.g. via Twilio).
-4. **Streaming Response Tokens (SSE)**: Implement Server-Sent Events (`StreamingResponse`) in `/chat` so users see token generation and tool invocation status in real time.
+4. **Streaming Response Tokens (SSE)**: Convert `/chat` to support Server-Sent Events (`StreamingResponse`) so users see token generation and tool invocation status in real time.
 5. **Provider Dashboard**: A web-based admin interface allowing pet care providers to adjust operating hours, black out holiday dates, and manage provider rosters.

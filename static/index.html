@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PawCare AI Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --user-msg: #2563eb;
+      --bot-msg: #1e293b;
+      --badge-bg: #334155;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .chat-app {
+      width: 100%;
+      max-width: 860px;
+      height: 92vh;
+      background: rgba(30, 41, 59, 0.7);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
+    header {
+      padding: 18px 24px;
+      background: rgba(15, 23, 42, 0.8);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .header-info { display: flex; align-items: center; gap: 14px; }
+    .avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #38bdf8, #818cf8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+    }
+    .title h1 { font-size: 1.15rem; font-weight: 700; color: #fff; }
+    .title p { font-size: 0.8rem; color: var(--text-muted); }
+    .session-badge {
+      font-size: 0.75rem;
+      background: var(--badge-bg);
+      padding: 4px 10px;
+      border-radius: 999px;
+      color: var(--accent);
+      border: 1px solid var(--border);
+    }
+    .messages {
+      flex: 1;
+      padding: 24px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .msg-group {
+      display: flex;
+      flex-direction: column;
+      max-width: 80%;
+      gap: 6px;
+    }
+    .msg-group.user { align-self: flex-end; align-items: flex-end; }
+    .msg-group.assistant { align-self: flex-start; align-items: flex-start; }
+    .bubble {
+      padding: 14px 18px;
+      border-radius: 16px;
+      line-height: 1.5;
+      font-size: 0.95rem;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+    .user .bubble {
+      background: var(--user-msg);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .assistant .bubble {
+      background: var(--bot-msg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 4px;
+    }
+    .metrics-bar {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      display: flex;
+      gap: 10px;
+      padding: 2px 6px;
+    }
+    .tool-box {
+      font-size: 0.78rem;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin-top: 4px;
+      width: 100%;
+    }
+    .tool-header {
+      cursor: pointer;
+      color: var(--accent);
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .tool-content {
+      margin-top: 6px;
+      font-family: monospace;
+      color: #cbd5e1;
+      white-space: pre-wrap;
+      display: none;
+    }
+    .chips {
+      display: flex;
+      gap: 8px;
+      padding: 10px 24px;
+      overflow-x: auto;
+      border-top: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.4);
+    }
+    .chip {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .chip:hover {
+      background: #334155;
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .input-bar {
+      padding: 16px 24px;
+      background: rgba(15, 23, 42, 0.9);
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 12px;
+    }
+    .input-bar input {
+      flex: 1;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 18px;
+      color: #fff;
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .input-bar input:focus { border-color: var(--accent); }
+    .input-bar button {
+      background: var(--accent);
+      color: #0f172a;
+      border: none;
+      padding: 0 22px;
+      border-radius: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .input-bar button:hover { background: var(--accent-hover); }
+    .input-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="chat-app">
+    <header>
+      <div class="header-info">
+        <div class="avatar">🐾</div>
+        <div class="title">
+          <h1>PawCare Assistant</h1>
+          <p>On-demand pet services booking with verified tool calling</p>
+        </div>
+      </div>
+      <div id="sessionBadge" class="session-badge">Session: init</div>
+    </header>
+
+    <div class="messages" id="messagesContainer">
+      <div class="msg-group assistant">
+        <div class="bubble">Hello! I'm your PawCare Assistant 🐾 I can help you check real availability and book Dog Walks, Grooming, Vet Home Visits, and Day Care. How can I help you today?</div>
+      </div>
+    </div>
+
+    <div class="chips">
+      <div class="chip" onclick="quickSend('Book a dog walk for Bruno tomorrow at 5 pm')">🐕 Dog walk tomorrow 5pm</div>
+      <div class="chip" onclick="quickSend('Book grooming this Saturday at 4 pm')">✂️ Grooming Saturday 4pm</div>
+      <div class="chip" onclick="quickSend('Book a vet visit this Sunday')">🩺 Vet Sunday</div>
+      <div class="chip" onclick="quickSend('kal shaam 4 baje Bruno ka dog walk book karo')">🇮🇳 Hinglish dog walk</div>
+      <div class="chip" onclick="quickSend('Cancel my booking')">❌ Cancel booking</div>
+    </div>
+
+    <div class="input-bar">
+      <input type="text" id="userInput" placeholder="Ask about pet care services or book a slot..." autocomplete="off">
+      <button id="sendBtn" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+
+  <script>
+    const sessionId = "session-" + Math.random().toString(36).substring(2, 10);
+    document.getElementById("sessionBadge").textContent = "Session: " + sessionId;
+
+    const messagesContainer = document.getElementById("messagesContainer");
+    const userInput = document.getElementById("userInput");
+    const sendBtn = document.getElementById("sendBtn");
+
+    userInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    function quickSend(text) {
+      userInput.value = text;
+      sendMessage();
+    }
+
+    async function sendMessage() {
+      const text = userInput.value.trim();
+      if (!text) return;
+
+      appendMessage("user", text);
+      userInput.value = "";
+      userInput.disabled = true;
+      sendBtn.disabled = true;
+
+      const loadingGroup = appendMessage("assistant", "Thinking...");
+
+      try {
+        const resp = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: sessionId,
+            message: text,
+            includeMetrics: true
+          })
+        });
+
+        const data = await resp.json();
+        loadingGroup.remove();
+
+        appendAssistantResponse(data);
+      } catch (err) {
+        loadingGroup.remove();
+        appendMessage("assistant", "⚠️ Error: Could not connect to server. Please try again.");
+      } finally {
+        userInput.disabled = false;
+        sendBtn.disabled = false;
+        userInput.focus();
+      }
+    }
+
+    function appendMessage(role, text) {
+      const group = document.createElement("div");
+      group.className = "msg-group " + role;
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = text;
+      group.appendChild(bubble);
+      messagesContainer.appendChild(group);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      return group;
+    }
+
+    function appendAssistantResponse(data) {
+      const group = document.createElement("div");
+      group.className = "msg-group assistant";
+
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = data.reply || "";
+      group.appendChild(bubble);
+
+      if (data.toolCalls && data.toolCalls.length > 0) {
+        const toolBox = document.createElement("div");
+        toolBox.className = "tool-box";
+        const header = document.createElement("div");
+        header.className = "tool-header";
+        header.innerHTML = `<span>⚙️ Executed ${data.toolCalls.length} tool call(s)</span><span>▼</span>`;
+        const content = document.createElement("div");
+        content.className = "tool-content";
+        content.textContent = JSON.stringify(data.toolCalls, null, 2);
+        header.onclick = () => {
+          content.style.display = content.style.display === "block" ? "none" : "block";
+        };
+        toolBox.appendChild(header);
+        toolBox.appendChild(content);
+        group.appendChild(toolBox);
+      }
+
+      if (data.metrics) {
+        const m = data.metrics;
+        const metricsBar = document.createElement("div");
+        metricsBar.className = "metrics-bar";
+        metricsBar.textContent = `⏱️ ${m.latencyMs}ms | 🪙 ${m.totalTokens} tokens | 💲 $${m.estimatedCostUsd.toFixed(6)}`;
+        group.appendChild(metricsBar);
+      }
+
+      messagesContainer.appendChild(group);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+  </script>
+</body>
+</html>

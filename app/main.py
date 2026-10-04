@@ -7,10 +7,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from openai import OpenAIError
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -84,7 +86,20 @@ async def _llm_provider_error(_: Request, exc: OpenAIError) -> JSONResponse:
     )
 
 
+STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
 # --------------------------------------------------------------------------- routes
+@app.get("/", include_in_schema=False)
+def serve_ui():
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return {"message": "PawCare API is running. Visit /docs for OpenAPI specifications."}
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
