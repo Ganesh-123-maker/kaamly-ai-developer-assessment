@@ -153,6 +153,18 @@ class RuleBasedFakeLLM:
             )
 
         # 3. Cancellation & Disambiguation
+        m_uuid = re.search(r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b", latest_user, re.I)
+        if m_uuid and re.search(r"cancel", latest_user, re.I) and "cancel_booking" not in results:
+            bid = m_uuid.group(1)
+            return _msg(tool_calls=[("cancel_booking", {"booking_id": bid})])
+
+        if "cancel_booking" in results:
+            r = results["cancel_booking"]
+            if r.get("ok"):
+                return _msg("Booking has been successfully cancelled.")
+            else:
+                return _msg(f"Could not cancel booking: {r.get('error')}")
+
         if re.search(r"cancel\s+(?:my\s+)?booking", latest_user, re.I):
             if "get_bookings" not in results:
                 return _msg(tool_calls=[("get_bookings", {})])
